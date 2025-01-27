@@ -71,13 +71,14 @@ const PongGame: React.FC<PongGameProps> = ({ onClose }) => {
   const [playerScore, setPlayerScore] = useState(0)
   const [aiScore, setAiScore] = useState(0)
   const intervalRef = useRef<number>()
+  const [gameStarted, setGameStarted] = useState(false)
 
   const ball = useRef<Ball>({
     x: CANVAS_WIDTH / 2,
     y: CANVAS_HEIGHT / 2,
     radius: BALL_RADIUS,
-    dx: INITIAL_BALL_SPEED,
-    dy: INITIAL_BALL_SPEED
+    dx: 0, // Start with 0 velocity
+    dy: 0
   })
 
   const playerPaddle = useRef<Paddle>({
@@ -97,12 +98,22 @@ const PongGame: React.FC<PongGameProps> = ({ onClose }) => {
   })
 
   const resetBall = () => {
+    const randomAngle = (Math.random() * Math.PI / 4) + Math.PI / 8 // angle between PI/8 and 3PI/8
+    const direction = Math.random() > 0.5 ? 1 : -1
+    
     ball.current = {
       x: CANVAS_WIDTH / 2,
       y: CANVAS_HEIGHT / 2,
       radius: BALL_RADIUS,
-      dx: INITIAL_BALL_SPEED * (Math.random() > 0.5 ? 1 : -1),
-      dy: INITIAL_BALL_SPEED * (Math.random() > 0.5 ? 1 : -1)
+      dx: INITIAL_BALL_SPEED * Math.cos(randomAngle) * direction,
+      dy: INITIAL_BALL_SPEED * Math.sin(randomAngle) * (Math.random() > 0.5 ? 1 : -1)
+    }
+  }
+
+  const startGame = () => {
+    if (!gameStarted) {
+      resetBall()
+      setGameStarted(true)
     }
   }
 
@@ -141,39 +152,77 @@ const PongGame: React.FC<PongGameProps> = ({ onClose }) => {
       aiPaddle.current.width,
       aiPaddle.current.height
     )
+
+    // Draw "Press any key to start" if game hasn't started
+    if (!gameStarted) {
+      ctx.fillStyle = '#fff'
+      ctx.font = '20px Arial'
+      ctx.textAlign = 'center'
+      ctx.fillText('Press any key to start', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 50)
+    }
   }
 
   const update = () => {
+    if (!gameStarted) return
+
     // Move ball
     ball.current.x += ball.current.dx
     ball.current.y += ball.current.dy
 
     // Ball collision with top and bottom walls
-    if (ball.current.y + ball.current.radius > CANVAS_HEIGHT || ball.current.y - ball.current.radius < 0) {
+    if (ball.current.y - ball.current.radius <= 0 || 
+        ball.current.y + ball.current.radius >= CANVAS_HEIGHT) {
       ball.current.dy *= -1
     }
 
     // Ball collision with paddles
     const paddleCollision = (paddle: Paddle) => {
+      const nextX = ball.current.x + ball.current.dx
       return (
-        ball.current.x - ball.current.radius < paddle.x + paddle.width &&
-        ball.current.x + ball.current.radius > paddle.x &&
+        nextX - ball.current.radius < paddle.x + paddle.width &&
+        nextX + ball.current.radius > paddle.x &&
         ball.current.y > paddle.y &&
         ball.current.y < paddle.y + paddle.height
       )
     }
 
-    if (paddleCollision(playerPaddle.current) || paddleCollision(aiPaddle.current)) {
-      ball.current.dx *= -1.1 // Increase speed slightly on paddle hits
+    if (paddleCollision(playerPaddle.current)) {
+      // Calculate angle based on where the ball hits the paddle
+      const relativeIntersectY = (playerPaddle.current.y + (PADDLE_HEIGHT / 2)) - ball.current.y
+      const normalizedIntersectY = relativeIntersectY / (PADDLE_HEIGHT / 2)
+      const bounceAngle = normalizedIntersectY * Math.PI / 3 // Increased angle range
+
+      const speed = Math.sqrt(ball.current.dx * ball.current.dx + ball.current.dy * ball.current.dy)
+      ball.current.dx = Math.abs(speed * Math.cos(bounceAngle)) // Always positive
+      ball.current.dy = -speed * Math.sin(bounceAngle)
+      
+      // Move ball out of paddle to prevent multiple collisions
+      ball.current.x = playerPaddle.current.x + playerPaddle.current.width + ball.current.radius
+    }
+
+    if (paddleCollision(aiPaddle.current)) {
+      // Similar angle calculation for AI paddle
+      const relativeIntersectY = (aiPaddle.current.y + (PADDLE_HEIGHT / 2)) - ball.current.y
+      const normalizedIntersectY = relativeIntersectY / (PADDLE_HEIGHT / 2)
+      const bounceAngle = normalizedIntersectY * Math.PI / 3 // Increased angle range
+
+      const speed = Math.sqrt(ball.current.dx * ball.current.dx + ball.current.dy * ball.current.dy)
+      ball.current.dx = -Math.abs(speed * Math.cos(bounceAngle)) // Always negative
+      ball.current.dy = -speed * Math.sin(bounceAngle)
+      
+      // Move ball out of paddle to prevent multiple collisions
+      ball.current.x = aiPaddle.current.x - ball.current.radius
     }
 
     // Score points
     if (ball.current.x + ball.current.radius > CANVAS_WIDTH) {
       setPlayerScore(prev => prev + 1)
       resetBall()
+      setGameStarted(false)
     } else if (ball.current.x - ball.current.radius < 0) {
       setAiScore(prev => prev + 1)
       resetBall()
+      setGameStarted(false)
     }
 
     // Move player paddle
@@ -183,15 +232,27 @@ const PongGame: React.FC<PongGameProps> = ({ onClose }) => {
       playerPaddle.current.y = CANVAS_HEIGHT - playerPaddle.current.height
     }
 
-    // AI paddle movement
-    const aiSpeed = 4
+    // AI paddle movement with improved tracking
+    const aiSpeed = 5
     const paddleCenter = aiPaddle.current.y + aiPaddle.current.height / 2
     const ballY = ball.current.y
+    const prediction = ball.current.y + (ball.current.dy * 
+      ((aiPaddle.current.x - ball.current.x) / Math.abs(ball.current.dx || 1)))
 
-    if (paddleCenter < ballY - 35) {
-      aiPaddle.current.y += aiSpeed
-    } else if (paddleCenter > ballY + 35) {
-      aiPaddle.current.y -= aiSpeed
+    // Only move if the ball is moving towards the AI
+    if (ball.current.dx > 0) {
+      if (paddleCenter < prediction - 10) {
+        aiPaddle.current.y += aiSpeed
+      } else if (paddleCenter > prediction + 10) {
+        aiPaddle.current.y -= aiSpeed
+      }
+    } else {
+      // Return to center when ball is moving away
+      if (paddleCenter < CANVAS_HEIGHT / 2 - 10) {
+        aiPaddle.current.y += aiSpeed / 2
+      } else if (paddleCenter > CANVAS_HEIGHT / 2 + 10) {
+        aiPaddle.current.y -= aiSpeed / 2
+      }
     }
 
     if (aiPaddle.current.y < 0) aiPaddle.current.y = 0
@@ -214,10 +275,17 @@ const PongGame: React.FC<PongGameProps> = ({ onClose }) => {
     if (!canvas) return
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!gameStarted) {
+        startGame()
+        return
+      }
+
       if (e.key === 'ArrowUp') {
         playerPaddle.current.dy = -PADDLE_SPEED
       } else if (e.key === 'ArrowDown') {
         playerPaddle.current.dy = PADDLE_SPEED
+      } else if (e.key === 'Escape') {
+        onClose()
       }
     }
 
@@ -239,7 +307,7 @@ const PongGame: React.FC<PongGameProps> = ({ onClose }) => {
         clearInterval(intervalRef.current)
       }
     }
-  }, [])
+  }, [gameStarted, onClose])
 
   return (
     <GameContainer>
